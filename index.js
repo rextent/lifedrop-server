@@ -62,6 +62,10 @@ function escapeRegex(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function escapeRegex(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function run() {
     try {
         await client.connect();
@@ -210,6 +214,90 @@ async function run() {
                 res.status(500).json({
                     success: false,
                     message: "Failed to load donation requests.",
+                });
+            }
+        });
+
+        // Get all donors for public search donors page with filter + pagination
+        app.get("/api/donors", async (req, res) => {
+            try {
+                const {
+                    bloodGroup = "all",
+                    district = "",
+                    upazila = "",
+                    page = 1,
+                    limit = 8,
+                } = req.query;
+
+                const query = {
+                    role: "donor",
+                };
+
+                if (bloodGroup !== "all") {
+                    query.bloodGroup = bloodGroup;
+                }
+
+                if (district.trim()) {
+                    query.district = {
+                        $regex: escapeRegex(district.trim()),
+                        $options: "i",
+                    };
+                }
+
+                if (upazila.trim()) {
+                    query.upazila = {
+                        $regex: escapeRegex(upazila.trim()),
+                        $options: "i",
+                    };
+                }
+
+                const currentPage = Number(page) || 1;
+                const perPage = Number(limit) || 8;
+                const skip = (currentPage - 1) * perPage;
+
+                const total = await userCollection.countDocuments(query);
+
+                const donors = await userCollection
+                    .find(query)
+                    .sort({ createdAt: -1, _id: -1 })
+                    .skip(skip)
+                    .limit(perPage)
+                    .project({
+                        name: 1,
+                        email: 1,
+                        image: 1,
+                        avatar: 1,
+                        avatarUrl: 1,
+                        bloodGroup: 1,
+                        district: 1,
+                        upazila: 1,
+                        role: 1,
+                        status: 1,
+                        createdAt: 1,
+                    })
+                    .toArray();
+
+                const formattedDonors = donors.map((donor) => ({
+                    ...donor,
+                    _id: donor._id.toString(),
+                }));
+
+                return res.status(200).json({
+                    success: true,
+                    donors: formattedDonors,
+                    pagination: {
+                        page: currentPage,
+                        limit: perPage,
+                        total,
+                        totalPages: Math.ceil(total / perPage),
+                    },
+                });
+            } catch (error) {
+                console.error("GET_PUBLIC_DONORS_ERROR:", error);
+
+                return res.status(500).json({
+                    success: false,
+                    message: error.message || "Failed to load donors.",
                 });
             }
         });
