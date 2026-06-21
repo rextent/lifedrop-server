@@ -210,6 +210,49 @@ async function run() {
             }
         });
 
+        // Get all pending donation requests for public page
+        app.get("/api/donationRequests", async (req, res) => {
+            try {
+                const status = req.query.status || "pending";
+
+                if (status !== "pending") {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Only pending donation requests are public.",
+                    });
+                }
+
+                const requests = await donationRequestCollection
+                    .find({ donationStatus: "pending" })
+                    .sort({ createdAt: -1, _id: -1 })
+                    .project({
+                        requesterName: 0,
+                        requesterEmail: 0,
+                        donorName: 0,
+                        donorEmail: 0,
+                    })
+                    .toArray();
+
+                const formattedRequests = requests.map((request) => ({
+                    ...request,
+                    _id: request._id.toString(),
+                }));
+
+                return res.status(200).json({
+                    success: true,
+                    count: formattedRequests.length,
+                    requests: formattedRequests,
+                });
+            } catch (error) {
+                console.error("GET_PUBLIC_DONATION_REQUESTS_ERROR:", error);
+
+                return res.status(500).json({
+                    success: false,
+                    message: error.message || "Failed to load pending donation requests.",
+                });
+            }
+        });
+
         // Get single donation request by id
         app.get("/api/donationRequests/:id", async (req, res) => {
             try {
