@@ -58,6 +58,10 @@ function validateDonationRequest(body) {
     return null;
 }
 
+function escapeRegex(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function run() {
     try {
         await client.connect();
@@ -210,10 +214,17 @@ async function run() {
             }
         });
 
-        // Get all pending donation requests for public page
+        // Get all pending donation requests for public page with filter + pagination
         app.get("/api/donationRequests", async (req, res) => {
             try {
-                const status = req.query.status || "pending";
+                const {
+                    status = "pending",
+                    bloodGroup = "all",
+                    district = "",
+                    upazila = "",
+                    page = 1,
+                    limit = 6,
+                } = req.query;
 
                 if (status !== "pending") {
                     return res.status(400).json({
@@ -222,9 +233,39 @@ async function run() {
                     });
                 }
 
+                const query = {
+                    donationStatus: "pending",
+                };
+
+                if (bloodGroup !== "all") {
+                    query.bloodGroup = bloodGroup;
+                }
+
+                if (district.trim()) {
+                    query.recipientDistrict = {
+                        $regex: escapeRegex(district.trim()),
+                        $options: "i",
+                    };
+                }
+
+                if (upazila.trim()) {
+                    query.recipientUpazila = {
+                        $regex: escapeRegex(upazila.trim()),
+                        $options: "i",
+                    };
+                }
+
+                const currentPage = Number(page) || 1;
+                const perPage = Number(limit) || 6;
+                const skip = (currentPage - 1) * perPage;
+
+                const total = await donationRequestCollection.countDocuments(query);
+
                 const requests = await donationRequestCollection
-                    .find({ donationStatus: "pending" })
+                    .find(query)
                     .sort({ createdAt: -1, _id: -1 })
+                    .skip(skip)
+                    .limit(perPage)
                     .project({
                         requesterName: 0,
                         requesterEmail: 0,
@@ -242,6 +283,12 @@ async function run() {
                     success: true,
                     count: formattedRequests.length,
                     requests: formattedRequests,
+                    pagination: {
+                        page: currentPage,
+                        limit: perPage,
+                        total,
+                        totalPages: Math.ceil(total / perPage),
+                    },
                 });
             } catch (error) {
                 console.error("GET_PUBLIC_DONATION_REQUESTS_ERROR:", error);
