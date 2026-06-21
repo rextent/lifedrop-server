@@ -253,6 +253,119 @@ async function run() {
             }
         });
 
+        // Get single donation request details for private details page
+        app.get("/api/donationRequests/details/:id", async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid donation request id.",
+                    });
+                }
+
+                const request = await donationRequestCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+
+                if (!request) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Donation request not found.",
+                    });
+                }
+
+                return res.status(200).json({
+                    success: true,
+                    request: {
+                        ...request,
+                        _id: request._id.toString(),
+                    },
+                });
+            } catch (error) {
+                console.error("GET_DONATION_REQUEST_DETAILS_ERROR:", error);
+
+                return res.status(500).json({
+                    success: false,
+                    message: "Failed to load donation request details.",
+                });
+            }
+        });
+
+
+        // Confirm donation and change status pending to inprogress
+        app.patch("/api/donationRequests/:id/donate", async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { donorName, donorEmail } = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid donation request id.",
+                    });
+                }
+
+                if (!donorName) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Donor name is required.",
+                    });
+                }
+
+                if (!donorEmail) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Donor email is required.",
+                    });
+                }
+
+                const result = await donationRequestCollection.updateOne(
+                    {
+                        _id: new ObjectId(id),
+                        donationStatus: "pending",
+                    },
+                    {
+                        $set: {
+                            donationStatus: "inprogress",
+                            donorName,
+                            donorEmail,
+                            updatedAt: new Date(),
+                        },
+                    }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "This request is not available for donation.",
+                    });
+                }
+
+                const updatedRequest = await donationRequestCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+
+                return res.status(200).json({
+                    success: true,
+                    message: "Donation confirmed successfully.",
+                    request: {
+                        ...updatedRequest,
+                        _id: updatedRequest._id.toString(),
+                    },
+                });
+            } catch (error) {
+                console.error("CONFIRM_DONATION_ERROR:", error);
+
+                return res.status(500).json({
+                    success: false,
+                    message: "Failed to confirm donation.",
+                });
+            }
+        });
+
+
         // Get single donation request by id
         app.get("/api/donationRequests/:id", async (req, res) => {
             try {
