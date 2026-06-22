@@ -2067,6 +2067,17 @@ async function run() {
             });
         });
 
+        app.use((error, req, res, next) => {
+            console.error("GLOBAL_SERVER_ERROR:", error);
+
+            const statusCode = error.status || error.statusCode || 500;
+
+            res.status(statusCode).json({
+                success: false,
+                message: error.message || "Internal server error.",
+            });
+        });
+
         await client.db("admin").command({ ping: 1 });
 
         console.log("MongoDB connected successfully.");
