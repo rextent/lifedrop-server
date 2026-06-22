@@ -344,6 +344,59 @@ async function run() {
             }
         });
 
+        app.get("/api/public/stats", async (req, res) => {
+            try {
+                const totalDonors = await userCollection.countDocuments({
+                    role: "donor",
+                    status: "active",
+                });
+
+                const totalRequests = await donationRequestsCollection.countDocuments();
+
+                const successfulDonations =
+                    await donationRequestsCollection.countDocuments({
+                        donationStatus: "done",
+                    });
+
+                const fundingResult = await fundingCollection
+                    .aggregate([
+                        {
+                            $match: {
+                                paymentStatus: "paid",
+                            },
+                        },
+                        {
+                            $group: {
+                                _id: null,
+                                totalAmount: {
+                                    $sum: "$amount",
+                                },
+                            },
+                        },
+                    ])
+                    .toArray();
+
+                const totalFundsRaised = fundingResult?.[0]?.totalAmount || 0;
+
+                res.status(200).json({
+                    success: true,
+                    stats: {
+                        totalDonors,
+                        totalRequests,
+                        successfulDonations,
+                        totalFundsRaised,
+                    },
+                });
+            } catch (error) {
+                console.error("PUBLIC_STATS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to load public stats.",
+                });
+            }
+        });
+
         app.get("/api/auth/me", verifyJWT, async (req, res) => {
             res.status(200).json({
                 success: true,
