@@ -456,7 +456,8 @@ async function run() {
                 const role = req.user?.role || "donor";
                 const email = req.user?.email;
 
-                if (role === "admin") {
+                // Admin and Volunteer will see the same platform dashboard overview
+                if (role === "admin" || role === "volunteer") {
                     const totalDonationRequests =
                         await donationRequestCollection.countDocuments();
 
@@ -524,7 +525,8 @@ async function run() {
 
                     return res.status(200).json({
                         success: true,
-                        role: "admin",
+                        role,
+                        dashboardType: "platform",
                         stats: {
                             totalDonationRequests,
                             totalDonors,
@@ -542,37 +544,7 @@ async function run() {
                     });
                 }
 
-                if (role === "volunteer") {
-                    const totalPublicRequests =
-                        await donationRequestCollection.countDocuments();
-
-                    const pendingRequests =
-                        await donationRequestCollection.countDocuments({
-                            donationStatus: "pending",
-                        });
-
-                    const inProgressRequests =
-                        await donationRequestCollection.countDocuments({
-                            donationStatus: "inprogress",
-                        });
-
-                    const completedRequests =
-                        await donationRequestCollection.countDocuments({
-                            donationStatus: "done",
-                        });
-
-                    return res.status(200).json({
-                        success: true,
-                        role: "volunteer",
-                        stats: {
-                            totalPublicRequests,
-                            pendingRequests,
-                            inProgressRequests,
-                            completedRequests,
-                        },
-                    });
-                }
-
+                // Donor dashboard overview
                 const myTotalRequests =
                     await donationRequestCollection.countDocuments({
                         requesterEmail: email,
@@ -599,6 +571,7 @@ async function run() {
                 return res.status(200).json({
                     success: true,
                     role: "donor",
+                    dashboardType: "donor",
                     stats: {
                         myTotalRequests,
                         myPendingRequests,
