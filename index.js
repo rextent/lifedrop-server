@@ -621,6 +621,125 @@ async function run() {
             }
         });
 
+        // Get all donation requests for admin/volunteer dashboard with filter + pagination
+        app.get("/api/dashboard/donation-requests", verifyUser, verifyVolunteerOrAdmin, async (req, res) => {
+            try {
+                const {
+                    status = "all",
+                    page = 1,
+                    limit = 10,
+                } = req.query;
+
+                const allowedStatuses = ["pending", "inprogress", "done", "canceled"];
+
+                const query = {};
+
+                if (status !== "all" && allowedStatuses.includes(status)) {
+                    query.donationStatus = status;
+                }
+
+                const currentPage = Math.max(Number(page) || 1, 1);
+                const perPage = Math.max(Number(limit) || 10, 1);
+                const skip = (currentPage - 1) * perPage;
+
+                const total = await donationRequestCollection.countDocuments(query);
+
+                const requests = await donationRequestCollection
+                    .find(query)
+                    .sort({ createdAt: -1, _id: -1 })
+                    .skip(skip)
+                    .limit(perPage)
+                    .toArray();
+
+                const formattedRequests = requests.map((request) => ({
+                    ...request,
+                    _id: request._id.toString(),
+                }));
+
+                res.status(200).json({
+                    success: true,
+                    role: req.user.role,
+                    requests: formattedRequests,
+                    pagination: {
+                        page: currentPage,
+                        limit: perPage,
+                        total,
+                        totalPages: Math.ceil(total / perPage),
+                    },
+                });
+            } catch (error) {
+                console.error("GET_DASHBOARD_DONATION_REQUESTS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to load donation requests.",
+                });
+            }
+        });
+
+        // Update donation request status by admin/volunteer
+        app.patch("/api/dashboard/donation-requests/:id/status", verifyUser, verifyVolunteerOrAdmin, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { status } = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid donation request id.",
+                    });
+                }
+
+                const allowedStatuses = ["pending", "inprogress", "done", "canceled"];
+
+                if (!allowedStatuses.includes(status)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid donation status.",
+                    });
+                }
+
+                const result = await donationRequestCollection.updateOne(
+                    {
+                        _id: new ObjectId(id),
+                    },
+                    {
+                        $set: {
+                            donationStatus: status,
+                            updatedAt: new Date(),
+                        },
+                    }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Donation request not found.",
+                    });
+                }
+
+                const updatedRequest = await donationRequestCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+
+                res.status(200).json({
+                    success: true,
+                    message: "Donation request status updated successfully.",
+                    request: {
+                        ...updatedRequest,
+                        _id: updatedRequest._id.toString(),
+                    },
+                });
+            } catch (error) {
+                console.error("UPDATE_DASHBOARD_DONATION_STATUS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to update donation request status.",
+                });
+            }
+        });
+
         // Fix missing role/status for existing users
         // app.patch("/api/admin/users/fix-defaults", verifyUser, verifyAdmin, async (req, res) => {
         //     try {
