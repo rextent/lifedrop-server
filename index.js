@@ -370,6 +370,371 @@ async function run() {
             }
         });
 
+        // Get all users for admin dashboard with status filter + pagination
+        app.get("/api/admin/users", verifyUser, verifyAdmin, async (req, res) => {
+            try {
+                const {
+                    status = "all",
+                    page = 1,
+                    limit = 10,
+                } = req.query;
+
+                const query = {};
+
+                if (status === "active") {
+                    query.$or = [
+                        { status: "active" },
+                        { status: { $exists: false } },
+                        { status: null },
+                        { status: "" },
+                    ];
+                }
+
+                if (status === "blocked") {
+                    query.status = "blocked";
+                }
+
+                const currentPage = Math.max(Number(page) || 1, 1);
+                const perPage = Math.max(Number(limit) || 10, 1);
+                const skip = (currentPage - 1) * perPage;
+
+                const total = await userCollection.countDocuments(query);
+
+                const users = await userCollection
+                    .find(query)
+                    .sort({ createdAt: -1, _id: -1 })
+                    .skip(skip)
+                    .limit(perPage)
+                    .project({
+                        name: 1,
+                        email: 1,
+                        image: 1,
+                        avatar: 1,
+                        avatarUrl: 1,
+                        role: 1,
+                        status: 1,
+                        bloodGroup: 1,
+                        district: 1,
+                        upazila: 1,
+                        createdAt: 1,
+                    })
+                    .toArray();
+
+                const formattedUsers = users.map((user) => ({
+                    ...user,
+                    _id: user._id.toString(),
+                    role: user.role || "donor",
+                    status: user.status || "active",
+                }));
+
+                res.status(200).json({
+                    success: true,
+                    users: formattedUsers,
+                    pagination: {
+                        page: currentPage,
+                        limit: perPage,
+                        total,
+                        totalPages: Math.ceil(total / perPage),
+                    },
+                });
+            } catch (error) {
+                console.error("GET_ADMIN_USERS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to load users.",
+                });
+            }
+        });
+
+        // Block or unblock user
+        app.patch("/api/admin/users/:id/status", verifyUser, verifyAdmin, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { status } = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid user id.",
+                    });
+                }
+
+                if (!["active", "blocked"].includes(status)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid user status.",
+                    });
+                }
+
+                if (req.user?._id?.toString() === id) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "You cannot change your own status.",
+                    });
+                }
+
+                const result = await userCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        $set: {
+                            status,
+                            updatedAt: new Date(),
+                        },
+                    }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "User not found.",
+                    });
+                }
+
+                const updatedUser = await userCollection.findOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        projection: {
+                            name: 1,
+                            email: 1,
+                            image: 1,
+                            avatar: 1,
+                            avatarUrl: 1,
+                            role: 1,
+                            status: 1,
+                            bloodGroup: 1,
+                            district: 1,
+                            upazila: 1,
+                            createdAt: 1,
+                        },
+                    }
+                );
+
+                res.status(200).json({
+                    success: true,
+                    message:
+                        status === "blocked"
+                            ? "User blocked successfully."
+                            : "User unblocked successfully.",
+                    user: {
+                        ...updatedUser,
+                        _id: updatedUser._id.toString(),
+                        role: updatedUser.role || "donor",
+                        status: updatedUser.status || "active",
+                    },
+                });
+            } catch (error) {
+                console.error("UPDATE_USER_STATUS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to update user status.",
+                });
+            }
+        });
+
+        // Make volunteer or make admin
+        app.patch("/api/admin/users/:id/role", verifyUser, verifyAdmin, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { role } = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid user id.",
+                    });
+                }
+
+                if (!["donor", "volunteer", "admin"].includes(role)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid user role.",
+                    });
+                }
+
+                if (req.user?._id?.toString() === id) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "You cannot change your own role.",
+                    });
+                }
+
+                const result = await userCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        $set: {
+                            role,
+                            updatedAt: new Date(),
+                        },
+                    }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "User not found.",
+                    });
+                }
+
+                const updatedUser = await userCollection.findOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        projection: {
+                            name: 1,
+                            email: 1,
+                            image: 1,
+                            avatar: 1,
+                            avatarUrl: 1,
+                            role: 1,
+                            status: 1,
+                            bloodGroup: 1,
+                            district: 1,
+                            upazila: 1,
+                            createdAt: 1,
+                        },
+                    }
+                );
+
+                res.status(200).json({
+                    success: true,
+                    message:
+                        role === "admin"
+                            ? "User role updated to admin successfully."
+                            : role === "volunteer"
+                                ? "User role updated to volunteer successfully."
+                                : "User role updated successfully.",
+                    user: {
+                        ...updatedUser,
+                        _id: updatedUser._id.toString(),
+                        role: updatedUser.role || "donor",
+                        status: updatedUser.status || "active",
+                    },
+                });
+            } catch (error) {
+                console.error("UPDATE_USER_ROLE_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to update user role.",
+                });
+            }
+        });
+
+        // Fix missing role/status for existing users
+        // app.patch("/api/admin/users/fix-defaults", verifyUser, verifyAdmin, async (req, res) => {
+        //     try {
+        //         const statusResult = await userCollection.updateMany(
+        //             {
+        //                 $or: [
+        //                     { status: { $exists: false } },
+        //                     { status: null },
+        //                     { status: "" },
+        //                 ],
+        //             },
+        //             {
+        //                 $set: {
+        //                     status: "active",
+        //                     updatedAt: new Date(),
+        //                 },
+        //             }
+        //         );
+
+        //         const roleResult = await userCollection.updateMany(
+        //             {
+        //                 $or: [
+        //                     { role: { $exists: false } },
+        //                     { role: null },
+        //                     { role: "" },
+        //                 ],
+        //             },
+        //             {
+        //                 $set: {
+        //                     role: "donor",
+        //                     updatedAt: new Date(),
+        //                 },
+        //             }
+        //         );
+
+        //         res.status(200).json({
+        //             success: true,
+        //             message: "Missing user defaults fixed successfully.",
+        //             updated: {
+        //                 statusModified: statusResult.modifiedCount,
+        //                 roleModified: roleResult.modifiedCount,
+        //             },
+        //         });
+        //     } catch (error) {
+        //         console.error("FIX_USER_DEFAULTS_ERROR:", error);
+
+        //         res.status(500).json({
+        //             success: false,
+        //             message: "Failed to fix user defaults.",
+        //         });
+        //     }
+        // });
+
+        // Ensure default role/status after user registration
+        app.patch("/api/users/defaults", async (req, res) => {
+            try {
+                const { email } = req.body;
+
+                if (!email) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "User email is required.",
+                    });
+                }
+
+                const user = await userCollection.findOne({ email });
+
+                if (!user) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "User not found.",
+                    });
+                }
+
+                const updateDoc = {};
+
+                if (!user.role) {
+                    updateDoc.role = "donor";
+                }
+
+                if (!user.status) {
+                    updateDoc.status = "active";
+                }
+
+                if (Object.keys(updateDoc).length === 0) {
+                    return res.status(200).json({
+                        success: true,
+                        message: "User defaults already exist.",
+                    });
+                }
+
+                updateDoc.updatedAt = new Date();
+
+                await userCollection.updateOne(
+                    { email },
+                    {
+                        $set: updateDoc,
+                    }
+                );
+
+                res.status(200).json({
+                    success: true,
+                    message: "User defaults updated successfully.",
+                });
+            } catch (error) {
+                console.error("ENSURE_USER_DEFAULTS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to ensure user defaults.",
+                });
+            }
+        });
+
         app.post("/api/donationRequests", async (req, res) => {
             try {
                 const donationRequest = req.body;
