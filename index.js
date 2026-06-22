@@ -4,6 +4,7 @@ const dns = require("node:dns");
 require("dotenv").config();
 
 const cookieParser = require("cookie-parser");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -14,12 +15,28 @@ const port = process.env.PORT || 5000;
 dns.setDefaultResultOrder("ipv4first");
 dns.setServers(["8.8.8.8", "1.1.1.1"]);
 
-app.use(
-    cors({
-        origin: ["http://localhost:3000"],
-        credentials: true,
-    })
-);
+const allowedOrigins = [
+    "http://localhost:3000",
+    "https://lifedrop-client.vercel.app",
+    process.env.CLIENT_URL,
+    process.env.PRODUCTION_CLIENT_URL,
+].filter(Boolean);
+
+const corsOptions = {
+    origin: function (origin, callback) {
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+
+        return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 app.use(express.json());
 app.use(cookieParser());
@@ -266,6 +283,7 @@ async function run() {
             }
         });
 
+        // Get dashboard stats based on user role
         app.get("/api/dashboard/stats", verifyUser, async (req, res) => {
             try {
                 const role = req.user?.role || "donor";
@@ -283,7 +301,59 @@ async function run() {
                         role: "volunteer",
                     });
 
-                    const totalFunding = 0;
+                    const totalFundingResult = await fundingCollection
+                        .aggregate([
+                            {
+                                $match: {
+                                    paymentStatus: "paid",
+                                },
+                            },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: {
+                                        $sum: "$amount",
+                                    },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const totalFunding = totalFundingResult[0]?.total || 0;
+
+                    const recentDonationRequests = await donationRequestCollection
+                        .find({})
+                        .sort({ createdAt: -1, _id: -1 })
+                        .limit(3)
+                        .project({
+                            requesterName: 1,
+                            requesterEmail: 1,
+                            recipientName: 1,
+                            recipientDistrict: 1,
+                            recipientUpazila: 1,
+                            bloodGroup: 1,
+                            donationDate: 1,
+                            donationTime: 1,
+                            donationStatus: 1,
+                            createdAt: 1,
+                        })
+                        .toArray();
+
+                    const recentFundings = await fundingCollection
+                        .find({
+                            paymentStatus: "paid",
+                        })
+                        .sort({ createdAt: -1, _id: -1 })
+                        .limit(3)
+                        .project({
+                            userName: 1,
+                            userEmail: 1,
+                            amount: 1,
+                            paymentStatus: 1,
+                            transactionId: 1,
+                            createdAt: 1,
+                        })
+                        .toArray();
 
                     return res.status(200).json({
                         success: true,
@@ -294,6 +364,14 @@ async function run() {
                             totalVolunteers,
                             totalFunding,
                         },
+                        recentDonationRequests: recentDonationRequests.map((request) => ({
+                            ...request,
+                            _id: request._id.toString(),
+                        })),
+                        recentFundings: recentFundings.map((funding) => ({
+                            ...funding,
+                            _id: funding._id.toString(),
+                        })),
                     });
                 }
 
@@ -618,6 +696,137 @@ async function run() {
                 res.status(500).json({
                     success: false,
                     message: "Failed to update user role.",
+                });
+            }
+        });
+
+        // Get all funding records for admin with pagination, search and filter
+        app.get("/api/admin/fundings", verifyUser, verifyAdmin, async (req, res) => {
+            try {
+                const {
+                    page = 1,
+                    limit = 10,
+                    status = "all",
+                    search = "",
+                    startDate = "",
+                    endDate = "",
+                } = req.query;
+
+                const query = {};
+
+                if (status !== "all") {
+                    query.paymentStatus = status;
+                }
+
+                if (search.trim()) {
+                    const safeSearch = search
+                        .trim()
+                        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+                    const searchRegex = new RegExp(safeSearch, "i");
+
+                    query.$or = [
+                        { userName: searchRegex },
+                        { userEmail: searchRegex },
+                        { transactionId: searchRegex },
+                    ];
+                }
+
+                if (startDate || endDate) {
+                    query.createdAt = {};
+
+                    if (startDate) {
+                        query.createdAt.$gte = new Date(startDate);
+                    }
+
+                    if (endDate) {
+                        const end = new Date(endDate);
+                        end.setHours(23, 59, 59, 999);
+                        query.createdAt.$lte = end;
+                    }
+                }
+
+                const currentPage = Math.max(Number(page) || 1, 1);
+                const perPage = Math.max(Number(limit) || 10, 1);
+                const skip = (currentPage - 1) * perPage;
+
+                const total = await fundingCollection.countDocuments(query);
+
+                const fundings = await fundingCollection
+                    .find(query)
+                    .sort({ createdAt: -1, _id: -1 })
+                    .skip(skip)
+                    .limit(perPage)
+                    .project({
+                        userName: 1,
+                        userEmail: 1,
+                        amount: 1,
+                        paymentStatus: 1,
+                        transactionId: 1,
+                        createdAt: 1,
+                    })
+                    .toArray();
+
+                const totalFundingResult = await fundingCollection
+                    .aggregate([
+                        {
+                            $match: {
+                                paymentStatus: "paid",
+                            },
+                        },
+                        {
+                            $group: {
+                                _id: null,
+                                total: {
+                                    $sum: "$amount",
+                                },
+                            },
+                        },
+                    ])
+                    .toArray();
+
+                const filteredFundingResult = await fundingCollection
+                    .aggregate([
+                        {
+                            $match: {
+                                ...query,
+                                paymentStatus: "paid",
+                            },
+                        },
+                        {
+                            $group: {
+                                _id: null,
+                                total: {
+                                    $sum: "$amount",
+                                },
+                            },
+                        },
+                    ])
+                    .toArray();
+
+                res.status(200).json({
+                    success: true,
+                    fundings: fundings.map((funding) => ({
+                        ...funding,
+                        _id: funding._id.toString(),
+                    })),
+                    summary: {
+                        totalFunding: totalFundingResult[0]?.total || 0,
+                        filteredFunding: filteredFundingResult[0]?.total || 0,
+                    },
+                    pagination: {
+                        page: currentPage,
+                        limit: perPage,
+                        total,
+                        totalPages: Math.ceil(total / perPage),
+                    },
+                });
+            } catch (error) {
+                console.error("GET_ADMIN_FUNDINGS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to load admin fundings.",
                 });
             }
         });
@@ -1205,11 +1414,24 @@ async function run() {
         });
 
 
-        // Get all funding records
+        // Get logged-in user's funding records
         app.get("/api/fundings", verifyUser, async (req, res) => {
             try {
+                const userEmail = req.user?.email;
+
+                if (!userEmail) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: User email not found.",
+                    });
+                }
+
+                const query = {
+                    userEmail,
+                };
+
                 const fundings = await fundingCollection
-                    .find({})
+                    .find(query)
                     .sort({ createdAt: -1, _id: -1 })
                     .project({
                         userName: 1,
@@ -1230,6 +1452,7 @@ async function run() {
                     .aggregate([
                         {
                             $match: {
+                                userEmail,
                                 paymentStatus: "paid",
                             },
                         },
@@ -1252,11 +1475,141 @@ async function run() {
                     totalFunding,
                 });
             } catch (error) {
-                console.error("GET_FUNDINGS_ERROR:", error);
+                console.error("GET_USER_FUNDINGS_ERROR:", error);
 
                 res.status(500).json({
                     success: false,
-                    message: "Failed to load fundings.",
+                    message: "Failed to load your fundings.",
+                });
+            }
+        });
+
+        // Create Stripe checkout session for funding
+        app.post("/api/create-checkout-session", verifyUser, async (req, res) => {
+            try {
+                const { amount } = req.body;
+
+                const fundingAmount = Number(amount);
+
+                if (!fundingAmount || fundingAmount < 1) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Minimum funding amount is $1.",
+                    });
+                }
+
+                const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+
+                const session = await stripe.checkout.sessions.create({
+                    payment_method_types: ["card"],
+                    mode: "payment",
+                    customer_email: req.user.email,
+                    line_items: [
+                        {
+                            price_data: {
+                                currency: "usd",
+                                product_data: {
+                                    name: "LifeDrop Organization Funding",
+                                    description: "Donation fund for LifeDrop blood donation organization.",
+                                },
+                                unit_amount: fundingAmount * 100,
+                            },
+                            quantity: 1,
+                        },
+                    ],
+                    metadata: {
+                        userName: req.user.name || "Unknown User",
+                        userEmail: req.user.email,
+                        amount: String(fundingAmount),
+                    },
+                    success_url: `${clientUrl}/funding/success?session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${clientUrl}/funding/cancel`,
+                });
+
+                res.status(200).json({
+                    success: true,
+                    url: session.url,
+                });
+            } catch (error) {
+                console.error("CREATE_CHECKOUT_SESSION_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to create checkout session.",
+                });
+            }
+        });
+
+        // Verify Stripe session and save funding
+        app.post("/api/payment/success", verifyUser, async (req, res) => {
+            try {
+                const { sessionId } = req.body;
+
+                if (!sessionId) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Session id is required.",
+                    });
+                }
+
+                const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+                if (!session) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Stripe session not found.",
+                    });
+                }
+
+                if (session.payment_status !== "paid") {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Payment is not completed.",
+                    });
+                }
+
+                const existingFunding = await fundingCollection.findOne({
+                    transactionId: session.id,
+                });
+
+                if (existingFunding) {
+                    return res.status(200).json({
+                        success: true,
+                        message: "Funding already recorded.",
+                        funding: {
+                            ...existingFunding,
+                            _id: existingFunding._id.toString(),
+                        },
+                    });
+                }
+
+                const amount = Number(session.metadata?.amount) || session.amount_total / 100;
+
+                const fundingDoc = {
+                    userName: session.metadata?.userName || req.user.name || "Unknown User",
+                    userEmail: session.metadata?.userEmail || req.user.email,
+                    amount,
+                    transactionId: session.id,
+                    paymentStatus: session.payment_status,
+                    createdAt: new Date(),
+                };
+
+                const result = await fundingCollection.insertOne(fundingDoc);
+
+                res.status(201).json({
+                    success: true,
+                    message: "Funding recorded successfully.",
+                    funding: {
+                        _id: result.insertedId.toString(),
+                        ...fundingDoc,
+                    },
+                });
+            } catch (error) {
+                console.error("PAYMENT_SUCCESS_VERIFY_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to verify payment.",
                 });
             }
         });
