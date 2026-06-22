@@ -456,6 +456,114 @@ async function run() {
                 const role = req.user?.role || "donor";
                 const email = req.user?.email;
 
+                const getDonationRequestChartData = async () => {
+                    const requests = await donationRequestCollection
+                        .find({})
+                        .project({
+                            createdAt: 1,
+                        })
+                        .toArray();
+
+                    const parseRequestDate = (value) => {
+                        if (!value) return null;
+
+                        const date = new Date(value);
+
+                        if (Number.isNaN(date.getTime())) return null;
+
+                        return date;
+                    };
+
+                    const requestDates = requests
+                        .map((request) => parseRequestDate(request.createdAt))
+                        .filter(Boolean);
+
+                    const countBetween = (startDate, endDate) => {
+                        return requestDates.filter(
+                            (date) => date >= startDate && date < endDate
+                        ).length;
+                    };
+
+                    const getStartOfDay = (date) => {
+                        const nextDate = new Date(date);
+                        nextDate.setHours(0, 0, 0, 0);
+                        return nextDate;
+                    };
+
+                    const getShortDateLabel = (date) => {
+                        return date.toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                        });
+                    };
+
+                    const getMonthLabel = (date) => {
+                        return date.toLocaleDateString("en-US", {
+                            month: "short",
+                            year: "numeric",
+                        });
+                    };
+
+                    const todayStart = getStartOfDay(new Date());
+
+                    const daily = [];
+
+                    for (let i = 6; i >= 0; i--) {
+                        const startDate = new Date(todayStart);
+                        startDate.setDate(todayStart.getDate() - i);
+
+                        const endDate = new Date(startDate);
+                        endDate.setDate(startDate.getDate() + 1);
+
+                        daily.push({
+                            label: getShortDateLabel(startDate),
+                            requests: countBetween(startDate, endDate),
+                        });
+                    }
+
+                    const weekly = [];
+
+                    for (let i = 3; i >= 0; i--) {
+                        const endDate = new Date(todayStart);
+                        endDate.setDate(todayStart.getDate() - i * 7 + 1);
+
+                        const startDate = new Date(endDate);
+                        startDate.setDate(endDate.getDate() - 7);
+
+                        weekly.push({
+                            label: `${getShortDateLabel(startDate)} - ${getShortDateLabel(
+                                new Date(endDate.getTime() - 1)
+                            )}`,
+                            requests: countBetween(startDate, endDate),
+                        });
+                    }
+
+                    const monthly = [];
+
+                    const currentMonth = new Date();
+                    currentMonth.setDate(1);
+                    currentMonth.setHours(0, 0, 0, 0);
+
+                    for (let i = 5; i >= 0; i--) {
+                        const startDate = new Date(currentMonth);
+                        startDate.setMonth(currentMonth.getMonth() - i);
+
+                        const endDate = new Date(startDate);
+                        endDate.setMonth(startDate.getMonth() + 1);
+
+                        monthly.push({
+                            label: getMonthLabel(startDate),
+                            requests: countBetween(startDate, endDate),
+                        });
+                    }
+
+                    return {
+                        daily,
+                        weekly,
+                        monthly,
+                    };
+                };
+
                 // Admin and Volunteer will see the same platform dashboard overview
                 if (role === "admin" || role === "volunteer") {
                     const totalDonationRequests =
@@ -523,6 +631,8 @@ async function run() {
                         })
                         .toArray();
 
+                    const donationRequestChart = await getDonationRequestChartData();
+
                     return res.status(200).json({
                         success: true,
                         role,
@@ -533,6 +643,7 @@ async function run() {
                             totalVolunteers,
                             totalFunding,
                         },
+                        donationRequestChart,
                         recentDonationRequests: recentDonationRequests.map((request) => ({
                             ...request,
                             _id: request._id.toString(),
@@ -585,6 +696,7 @@ async function run() {
                 return res.status(500).json({
                     success: false,
                     message: "Failed to load dashboard statistics.",
+                    error: error.message,
                 });
             }
         });
