@@ -346,37 +346,36 @@ async function run() {
 
         app.get("/api/public/stats", async (req, res) => {
             try {
+                const userCollection = database.collection("user");
+                const donationRequestsCollection = database.collection("donationRequests");
+                const fundingCollection = database.collection("fundings");
+
                 const totalDonors = await userCollection.countDocuments({
                     role: "donor",
-                    status: "active",
+                    status: { $ne: "blocked" },
                 });
 
                 const totalRequests = await donationRequestsCollection.countDocuments();
 
-                const successfulDonations =
-                    await donationRequestsCollection.countDocuments({
-                        donationStatus: "done",
-                    });
+                const successfulDonations = await donationRequestsCollection.countDocuments({
+                    $or: [
+                        { donationStatus: "done" },
+                        { status: "done" },
+                    ],
+                });
 
-                const fundingResult = await fundingCollection
-                    .aggregate([
-                        {
-                            $match: {
-                                paymentStatus: "paid",
-                            },
-                        },
-                        {
-                            $group: {
-                                _id: null,
-                                totalAmount: {
-                                    $sum: "$amount",
-                                },
-                            },
-                        },
-                    ])
+                const paidFundings = await fundingCollection
+                    .find({
+                        paymentStatus: "paid",
+                    })
+                    .project({
+                        amount: 1,
+                    })
                     .toArray();
 
-                const totalFundsRaised = fundingResult?.[0]?.totalAmount || 0;
+                const totalFundsRaised = paidFundings.reduce((total, funding) => {
+                    return total + Number(funding.amount || 0);
+                }, 0);
 
                 res.status(200).json({
                     success: true,
@@ -393,6 +392,7 @@ async function run() {
                 res.status(500).json({
                     success: false,
                     message: "Failed to load public stats.",
+                    error: error.message,
                 });
             }
         });
