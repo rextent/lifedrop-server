@@ -2060,6 +2060,13 @@ async function run() {
             }
         });
 
+        app.use((req, res) => {
+            res.status(404).json({
+                success: false,
+                message: `Route not found: ${req.method} ${req.originalUrl}`,
+            });
+        });
+
         await client.db("admin").command({ ping: 1 });
 
         console.log("MongoDB connected successfully.");
