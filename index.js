@@ -99,8 +99,8 @@ async function run() {
 
         const database = client.db("lifedrop_db");
 
-        donationRequestCollection = database.collection("donationRequests");
-        userCollection = database.collection("user");
+        const donationRequestCollection = database.collection("donationRequests");
+        const userCollection = database.collection("user");
         const sessionCollection = database.collection("session");
         const fundingCollection = database.collection("fundings");
 
