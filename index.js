@@ -4,6 +4,7 @@ const dns = require("node:dns");
 require("dotenv").config();
 
 const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
@@ -45,6 +46,12 @@ const uri = process.env.MONGO_DB_URI;
 
 if (!uri) {
     throw new Error("MONGO_DB_URI is missing in backend .env");
+}
+
+const jwtSecret = process.env.JWT_ACCESS_SECRET;
+
+if (!jwtSecret) {
+    throw new Error("JWT_ACCESS_SECRET is missing in backend .env");
 }
 
 const client = new MongoClient(uri, {
@@ -96,6 +103,86 @@ async function run() {
         userCollection = database.collection("user");
         const sessionCollection = database.collection("session");
         const fundingCollection = database.collection("fundings");
+
+        const verifyJWT = async (req, res, next) => {
+            try {
+                const authHeader = req.headers.authorization;
+
+                if (!authHeader || !authHeader.startsWith("Bearer ")) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: JWT token missing.",
+                    });
+                }
+
+                const token = authHeader.split(" ")[1];
+
+                const decoded = jwt.verify(token, jwtSecret);
+
+                if (!decoded?.email) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: Invalid JWT payload.",
+                    });
+                }
+
+                const user = await userCollection.findOne({
+                    email: decoded.email,
+                });
+
+                if (!user) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: User not found.",
+                    });
+                }
+
+                if (user.status === "blocked") {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Forbidden: Your account is blocked.",
+                    });
+                }
+
+                req.user = {
+                    ...user,
+                    _id: user._id.toString(),
+                    role: user.role || "donor",
+                    status: user.status || "active",
+                };
+
+                next();
+            } catch (error) {
+                console.error("VERIFY_JWT_ERROR:", error);
+
+                return res.status(401).json({
+                    success: false,
+                    message: "Unauthorized: Invalid or expired JWT token.",
+                });
+            }
+        };
+
+        const verifyAdminJWT = (req, res, next) => {
+            if (req.user?.role !== "admin") {
+                return res.status(403).json({
+                    success: false,
+                    message: "Forbidden: Admin only.",
+                });
+            }
+
+            next();
+        };
+
+        const verifyVolunteerOrAdminJWT = (req, res, next) => {
+            if (req.user?.role !== "admin" && req.user?.role !== "volunteer") {
+                return res.status(403).json({
+                    success: false,
+                    message: "Forbidden: Volunteer or Admin only.",
+                });
+            }
+
+            next();
+        };
 
         const getSessionTokenFromCookies = (req) => {
             const cookies = req.cookies || {};
@@ -257,7 +344,7 @@ async function run() {
             }
         });
 
-        app.get("/api/auth/me", verifyUser, async (req, res) => {
+        app.get("/api/auth/me", verifyJWT, async (req, res) => {
             res.status(200).json({
                 success: true,
                 user: {
@@ -275,7 +362,7 @@ async function run() {
             });
         });
 
-        app.get("/api/admin/stats", verifyUser, verifyAdmin, async (req, res) => {
+        app.get("/api/admin/stats", verifyJWT, verifyAdminJWT, async (req, res) => {
             try {
                 const totalDonationRequests =
                     await donationRequestCollection.countDocuments();
@@ -311,7 +398,7 @@ async function run() {
         });
 
         // Get dashboard stats based on user role
-        app.get("/api/dashboard/stats", verifyUser, async (req, res) => {
+        app.get("/api/dashboard/stats", verifyJWT, async (req, res) => {
             try {
                 const role = req.user?.role || "donor";
                 const email = req.user?.email;
@@ -477,7 +564,7 @@ async function run() {
         });
 
         // Get all users for admin dashboard with status filter + pagination
-        app.get("/api/admin/users", verifyUser, verifyAdmin, async (req, res) => {
+        app.get("/api/admin/users", verifyJWT, verifyAdminJWT, async (req, res) => {
             try {
                 const {
                     status = "all",
@@ -553,8 +640,65 @@ async function run() {
             }
         });
 
+        // Create JWT token after successful login/signup
+        app.post("/api/jwt", async (req, res) => {
+            try {
+                const { email } = req.body;
+
+                if (!email) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Email is required.",
+                    });
+                }
+
+                const user = await userCollection.findOne({
+                    email,
+                });
+
+                if (!user) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "User not found.",
+                    });
+                }
+
+                if (user.status === "blocked") {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Blocked user cannot get access token.",
+                    });
+                }
+
+                const tokenPayload = {
+                    id: user._id.toString(),
+                    email: user.email,
+                    name: user.name || "",
+                    role: user.role || "donor",
+                    status: user.status || "active",
+                };
+
+                const token = jwt.sign(tokenPayload, jwtSecret, {
+                    expiresIn: "7d",
+                });
+
+                res.status(200).json({
+                    success: true,
+                    token,
+                    user: tokenPayload,
+                });
+            } catch (error) {
+                console.error("CREATE_JWT_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to create JWT token.",
+                });
+            }
+        });
+
         // Block or unblock user
-        app.patch("/api/admin/users/:id/status", verifyUser, verifyAdmin, async (req, res) => {
+        app.patch("/api/admin/users/:id/status", verifyJWT, verifyAdminJWT, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { status } = req.body;
@@ -640,7 +784,7 @@ async function run() {
         });
 
         // Make volunteer or make admin
-        app.patch("/api/admin/users/:id/role", verifyUser, verifyAdmin, async (req, res) => {
+        app.patch("/api/admin/users/:id/role", verifyJWT, verifyAdminJWT, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { role } = req.body;
@@ -728,7 +872,7 @@ async function run() {
         });
 
         // Get all funding records for admin with pagination, search and filter
-        app.get("/api/admin/fundings", verifyUser, verifyAdmin, async (req, res) => {
+        app.get("/api/admin/fundings", verifyJWT, verifyAdminJWT, async (req, res) => {
             try {
                 const {
                     page = 1,
@@ -859,7 +1003,7 @@ async function run() {
         });
 
         // Get all donation requests for admin/volunteer dashboard with filter + pagination
-        app.get("/api/dashboard/donation-requests", verifyUser, verifyVolunteerOrAdmin, async (req, res) => {
+        app.get("/api/dashboard/donation-requests", verifyJWT, verifyVolunteerOrAdminJWT, async (req, res) => {
             try {
                 const {
                     status = "all",
@@ -915,7 +1059,7 @@ async function run() {
         });
 
         // Update donation request status by admin/volunteer
-        app.patch("/api/dashboard/donation-requests/:id/status", verifyUser, verifyVolunteerOrAdmin, async (req, res) => {
+        app.patch("/api/dashboard/donation-requests/:id/status", verifyJWT, verifyVolunteerOrAdminJWT, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { status } = req.body;
@@ -1091,7 +1235,7 @@ async function run() {
             }
         });
 
-        app.post("/api/donationRequests", async (req, res) => {
+        app.post("/api/donationRequests", verifyJWT, async (req, res) => {
             try {
                 const donationRequest = req.body;
 
@@ -1171,7 +1315,7 @@ async function run() {
             }
         });
         // Get logged-in user's donation requests with filter + pagination
-        app.get("/api/donationRequests/my", async (req, res) => {
+        app.get("/api/donationRequests/my", verifyJWT, async (req, res) => {
             try {
                 const { email, status = "all", page = 1, limit = 10 } = req.query;
 
@@ -1401,7 +1545,7 @@ async function run() {
         });
 
         // Get single donation request details for private details page
-        app.get("/api/donationRequests/details/:id", async (req, res) => {
+        app.get("/api/donationRequests/details/:id", verifyJWT, async (req, res) => {
             try {
                 const { id } = req.params;
 
@@ -1441,8 +1585,9 @@ async function run() {
         });
 
 
+
         // Get logged-in user's funding records
-        app.get("/api/fundings", verifyUser, async (req, res) => {
+        app.get("/api/fundings", verifyJWT, async (req, res) => {
             try {
                 const userEmail = req.user?.email;
 
@@ -1512,7 +1657,7 @@ async function run() {
         });
 
         // Create Stripe checkout session for funding
-        app.post("/api/create-checkout-session", verifyUser, async (req, res) => {
+        app.post("/api/create-checkout-session", verifyJWT, async (req, res) => {
             try {
                 const { amount } = req.body;
 
@@ -1568,7 +1713,7 @@ async function run() {
         });
 
         // Verify Stripe session and save funding
-        app.post("/api/payment/success", verifyUser, async (req, res) => {
+        app.post("/api/payment/success", verifyJWT, async (req, res) => {
             try {
                 const { sessionId } = req.body;
 
@@ -1643,7 +1788,7 @@ async function run() {
 
 
         // Confirm donation and change status pending to inprogress
-        app.patch("/api/donationRequests/:id/donate", async (req, res) => {
+        app.patch("/api/donationRequests/:id/donate", verifyJWT, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { donorName, donorEmail } = req.body;
@@ -1715,7 +1860,7 @@ async function run() {
 
 
         // Get single donation request by id for edit page
-        app.get("/api/donationRequests/:id", verifyUser, async (req, res) => {
+        app.get("/api/donationRequests/:id", verifyJWT, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { email } = req.query;
@@ -1777,7 +1922,7 @@ async function run() {
         });
 
         // Update donation request
-        app.put("/api/donationRequests/:id", verifyUser, async (req, res) => {
+        app.put("/api/donationRequests/:id", verifyJWT, async (req, res) => {
             try {
                 const { id } = req.params;
                 const body = req.body;
@@ -1926,7 +2071,7 @@ async function run() {
         });
 
         // Update donation request status
-        app.patch("/api/donationRequests/:id/status", async (req, res) => {
+        app.patch("/api/donationRequests/:id/status", verifyJWT, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { status, requesterEmail } = req.body;
@@ -2015,7 +2160,7 @@ async function run() {
         });
 
         // Delete own donation request
-        app.delete("/api/donationRequests/:id", async (req, res) => {
+        app.delete("/api/donationRequests/:id", verifyJWT, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { email } = req.query;
