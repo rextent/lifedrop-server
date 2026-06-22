@@ -227,7 +227,34 @@ async function run() {
         };
 
         app.get("/", (req, res) => {
-            res.send("LifeDrop backend is running");
+            res.status(200).json({
+                success: true,
+                message: "LifeDrop server is running.",
+            });
+        });
+
+        app.get("/api/health", async (req, res) => {
+            try {
+                await client.db("admin").command({ ping: 1 });
+
+                res.status(200).json({
+                    success: true,
+                    message: "LifeDrop backend is healthy.",
+                    server: "running",
+                    database: "connected",
+                    timestamp: new Date().toISOString(),
+                });
+            } catch (error) {
+                console.error("HEALTH_CHECK_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Server is running, but database connection failed.",
+                    server: "running",
+                    database: "disconnected",
+                    error: error.message,
+                });
+            }
         });
 
         app.get("/api/auth/me", verifyUser, async (req, res) => {
