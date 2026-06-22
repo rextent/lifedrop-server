@@ -3,6 +3,8 @@ const cors = require("cors");
 const dns = require("node:dns");
 require("dotenv").config();
 
+const cookieParser = require("cookie-parser");
+
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const app = express();
@@ -20,6 +22,7 @@ app.use(
 );
 
 app.use(express.json());
+app.use(cookieParser());
 
 const uri = process.env.MONGO_DB_URI;
 
@@ -74,9 +77,297 @@ async function run() {
 
         donationRequestCollection = database.collection("donationRequests");
         userCollection = database.collection("user");
+        const sessionCollection = database.collection("session");
+
+        const getSessionTokenFromCookies = (req) => {
+            const cookies = req.cookies || {};
+            const cookieKeys = Object.keys(cookies);
+
+            const sessionCookieKey = cookieKeys.find(
+                (key) =>
+                    key.includes("better-auth") &&
+                    key.includes("session")
+            );
+
+            if (!sessionCookieKey) {
+                return null;
+            }
+
+            const rawToken = cookies[sessionCookieKey];
+
+            if (!rawToken) {
+                return null;
+            }
+
+            return decodeURIComponent(rawToken);
+        };
+
+        const verifyUser = async (req, res, next) => {
+            try {
+                const sessionToken = getSessionTokenFromCookies(req);
+
+                if (!sessionToken) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: No session token found.",
+                    });
+                }
+
+                const possibleTokens = [sessionToken];
+
+                if (sessionToken.includes(".")) {
+                    possibleTokens.push(sessionToken.split(".")[0]);
+                }
+
+                const session = await sessionCollection.findOne({
+                    token: {
+                        $in: possibleTokens,
+                    },
+                });
+
+                if (!session) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: Invalid session.",
+                    });
+                }
+
+                if (session.expiresAt && new Date(session.expiresAt) < new Date()) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: Session expired.",
+                    });
+                }
+
+                const userQuery = [];
+
+                if (session.userId) {
+                    userQuery.push({ id: session.userId });
+
+                    if (ObjectId.isValid(session.userId)) {
+                        userQuery.push({ _id: new ObjectId(session.userId) });
+                    }
+                }
+
+                if (userQuery.length === 0) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: User id not found in session.",
+                    });
+                }
+
+                const user = await userCollection.findOne({
+                    $or: userQuery,
+                });
+
+                if (!user) {
+                    return res.status(401).json({
+                        success: false,
+                        message: "Unauthorized: User not found.",
+                    });
+                }
+
+                if (user.status === "blocked") {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Forbidden: Your account is blocked.",
+                    });
+                }
+
+                req.user = user;
+                next();
+            } catch (error) {
+                console.error("VERIFY_USER_ERROR:", error);
+
+                return res.status(500).json({
+                    success: false,
+                    message: "Failed to verify user.",
+                });
+            }
+        };
+
+        const verifyAdmin = async (req, res, next) => {
+            if (req.user?.role !== "admin") {
+                return res.status(403).json({
+                    success: false,
+                    message: "Forbidden: Admin only.",
+                });
+            }
+
+            next();
+        };
+
+        const verifyVolunteerOrAdmin = async (req, res, next) => {
+            if (req.user?.role !== "admin" && req.user?.role !== "volunteer") {
+                return res.status(403).json({
+                    success: false,
+                    message: "Forbidden: Volunteer or Admin only.",
+                });
+            }
+
+            next();
+        };
 
         app.get("/", (req, res) => {
             res.send("LifeDrop backend is running");
+        });
+
+        app.get("/api/auth/me", verifyUser, async (req, res) => {
+            res.status(200).json({
+                success: true,
+                user: {
+                    _id: req.user._id?.toString(),
+                    id: req.user.id,
+                    name: req.user.name,
+                    email: req.user.email,
+                    image: req.user.image,
+                    role: req.user.role,
+                    status: req.user.status,
+                    bloodGroup: req.user.bloodGroup,
+                    district: req.user.district,
+                    upazila: req.user.upazila,
+                },
+            });
+        });
+
+        app.get("/api/admin/stats", verifyUser, verifyAdmin, async (req, res) => {
+            try {
+                const totalDonationRequests =
+                    await donationRequestCollection.countDocuments();
+
+                const totalDonors = await userCollection.countDocuments({
+                    role: "donor",
+                });
+
+                const totalVolunteers = await userCollection.countDocuments({
+                    role: "volunteer",
+                });
+
+                // Funding bonus section later হবে, তাই আপাতত 0
+                const totalFunding = 0;
+
+                res.status(200).json({
+                    success: true,
+                    stats: {
+                        totalDonationRequests,
+                        totalDonors,
+                        totalVolunteers,
+                        totalFunding,
+                    },
+                });
+            } catch (error) {
+                console.error("GET_ADMIN_STATS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to load admin statistics.",
+                });
+            }
+        });
+
+        app.get("/api/dashboard/stats", verifyUser, async (req, res) => {
+            try {
+                const role = req.user?.role || "donor";
+                const email = req.user?.email;
+
+                if (role === "admin") {
+                    const totalDonationRequests =
+                        await donationRequestCollection.countDocuments();
+
+                    const totalDonors = await userCollection.countDocuments({
+                        role: "donor",
+                    });
+
+                    const totalVolunteers = await userCollection.countDocuments({
+                        role: "volunteer",
+                    });
+
+                    const totalFunding = 0;
+
+                    return res.status(200).json({
+                        success: true,
+                        role: "admin",
+                        stats: {
+                            totalDonationRequests,
+                            totalDonors,
+                            totalVolunteers,
+                            totalFunding,
+                        },
+                    });
+                }
+
+                if (role === "volunteer") {
+                    const totalPublicRequests =
+                        await donationRequestCollection.countDocuments();
+
+                    const pendingRequests =
+                        await donationRequestCollection.countDocuments({
+                            donationStatus: "pending",
+                        });
+
+                    const inProgressRequests =
+                        await donationRequestCollection.countDocuments({
+                            donationStatus: "inprogress",
+                        });
+
+                    const completedRequests =
+                        await donationRequestCollection.countDocuments({
+                            donationStatus: "done",
+                        });
+
+                    return res.status(200).json({
+                        success: true,
+                        role: "volunteer",
+                        stats: {
+                            totalPublicRequests,
+                            pendingRequests,
+                            inProgressRequests,
+                            completedRequests,
+                        },
+                    });
+                }
+
+                const myTotalRequests =
+                    await donationRequestCollection.countDocuments({
+                        requesterEmail: email,
+                    });
+
+                const myPendingRequests =
+                    await donationRequestCollection.countDocuments({
+                        requesterEmail: email,
+                        donationStatus: "pending",
+                    });
+
+                const myInProgressRequests =
+                    await donationRequestCollection.countDocuments({
+                        requesterEmail: email,
+                        donationStatus: "inprogress",
+                    });
+
+                const myCompletedRequests =
+                    await donationRequestCollection.countDocuments({
+                        requesterEmail: email,
+                        donationStatus: "done",
+                    });
+
+                return res.status(200).json({
+                    success: true,
+                    role: "donor",
+                    stats: {
+                        myTotalRequests,
+                        myPendingRequests,
+                        myInProgressRequests,
+                        myCompletedRequests,
+                    },
+                });
+            } catch (error) {
+                console.error("GET_DASHBOARD_STATS_ERROR:", error);
+
+                return res.status(500).json({
+                    success: false,
+                    message: "Failed to load dashboard statistics.",
+                });
+            }
         });
 
         app.post("/api/donationRequests", async (req, res) => {
