@@ -1276,8 +1276,8 @@ async function run() {
         });
 
 
-        // Get single donation request by id
-        app.get("/api/donationRequests/:id", async (req, res) => {
+        // Get single donation request by id for edit page
+        app.get("/api/donationRequests/:id", verifyUser, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { email } = req.query;
@@ -1289,17 +1289,30 @@ async function run() {
                     });
                 }
 
-                if (!email) {
-                    return res.status(400).json({
-                        success: false,
-                        message: "Requester email is required.",
-                    });
+                const requestQuery = {
+                    _id: new ObjectId(id),
+                };
+
+                // Admin can access any request
+                if (req.user?.role !== "admin") {
+                    if (!email) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Requester email is required.",
+                        });
+                    }
+
+                    if (req.user?.email !== email) {
+                        return res.status(403).json({
+                            success: false,
+                            message: "Forbidden: You can only access your own request.",
+                        });
+                    }
+
+                    requestQuery.requesterEmail = email;
                 }
 
-                const request = await donationRequestCollection.findOne({
-                    _id: new ObjectId(id),
-                    requesterEmail: email,
-                });
+                const request = await donationRequestCollection.findOne(requestQuery);
 
                 if (!request) {
                     return res.status(404).json({
@@ -1325,8 +1338,8 @@ async function run() {
             }
         });
 
-        // Update own donation request
-        app.put("/api/donationRequests/:id", async (req, res) => {
+        // Update donation request
+        app.put("/api/donationRequests/:id", verifyUser, async (req, res) => {
             try {
                 const { id } = req.params;
                 const body = req.body;
@@ -1335,13 +1348,6 @@ async function run() {
                     return res.status(400).json({
                         success: false,
                         message: "Invalid donation request id.",
-                    });
-                }
-
-                if (!body.requesterEmail) {
-                    return res.status(400).json({
-                        success: false,
-                        message: "Requester email is required.",
                     });
                 }
 
@@ -1408,6 +1414,28 @@ async function run() {
                     });
                 }
 
+                const request = await donationRequestCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+
+                if (!request) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Donation request not found.",
+                    });
+                }
+
+                // Donor can update only own request
+                // Admin can update any request
+                if (req.user?.role !== "admin") {
+                    if (request.requesterEmail !== req.user?.email) {
+                        return res.status(403).json({
+                            success: false,
+                            message: "Forbidden: You can only update your own request.",
+                        });
+                    }
+                }
+
                 const updateDoc = {
                     recipientName: body.recipientName,
                     recipientDistrict: body.recipientDistrict,
@@ -1424,7 +1452,6 @@ async function run() {
                 const result = await donationRequestCollection.updateOne(
                     {
                         _id: new ObjectId(id),
-                        requesterEmail: body.requesterEmail,
                     },
                     {
                         $set: updateDoc,
