@@ -78,6 +78,7 @@ async function run() {
         donationRequestCollection = database.collection("donationRequests");
         userCollection = database.collection("user");
         const sessionCollection = database.collection("session");
+        const fundingCollection = database.collection("fundings");
 
         const getSessionTokenFromCookies = (req) => {
             const cookies = req.cookies || {};
@@ -1199,6 +1200,63 @@ async function run() {
                 return res.status(500).json({
                     success: false,
                     message: "Failed to load donation request details.",
+                });
+            }
+        });
+
+
+        // Get all funding records
+        app.get("/api/fundings", verifyUser, async (req, res) => {
+            try {
+                const fundings = await fundingCollection
+                    .find({})
+                    .sort({ createdAt: -1, _id: -1 })
+                    .project({
+                        userName: 1,
+                        userEmail: 1,
+                        amount: 1,
+                        paymentStatus: 1,
+                        transactionId: 1,
+                        createdAt: 1,
+                    })
+                    .toArray();
+
+                const formattedFundings = fundings.map((funding) => ({
+                    ...funding,
+                    _id: funding._id.toString(),
+                }));
+
+                const totalFundingResult = await fundingCollection
+                    .aggregate([
+                        {
+                            $match: {
+                                paymentStatus: "paid",
+                            },
+                        },
+                        {
+                            $group: {
+                                _id: null,
+                                total: {
+                                    $sum: "$amount",
+                                },
+                            },
+                        },
+                    ])
+                    .toArray();
+
+                const totalFunding = totalFundingResult[0]?.total || 0;
+
+                res.status(200).json({
+                    success: true,
+                    fundings: formattedFundings,
+                    totalFunding,
+                });
+            } catch (error) {
+                console.error("GET_FUNDINGS_ERROR:", error);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to load fundings.",
                 });
             }
         });
